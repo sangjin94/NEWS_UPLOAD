@@ -310,9 +310,11 @@ class PokemonShortsPipeline:
         for i in range(0, self.resolution[1], 100):
             draw.line([(0, i), (self.resolution[0], i)], fill=(40, 40, 45), width=1)
 
-        # 4. 상단 헤드라인 바
+        # 4. 상단 헤드라인 바 (Safe Zone: 하단 15% 지점부터)
+        bar_y_start = 250
+        bar_y_end = 420
         bar_color = (180, 20, 20) if "bear" in cue else (20, 130, 40) if "bull" in cue else (40, 60, 180)
-        draw.rectangle([0, 120, self.resolution[0], 280], fill=bar_color)
+        draw.rectangle([0, bar_y_start, self.resolution[0], bar_y_end], fill=bar_color)
         
         # 헤드라인 폰트 조절 (가로 폭에 맞춰 축소)
         headline_size = 80
@@ -323,12 +325,14 @@ class PokemonShortsPipeline:
             h_font = get_font(headline_size)
             h_bbox = draw.textbbox((0, 0), headline, font=h_font)
         
-        draw.text((60, 200 - (h_bbox[3]-h_bbox[1])/2), headline, font=h_font, fill=(255, 255, 255))
-        draw.text((self.resolution[0] - 350, 180), f"{self.market} MARKET", font=get_font(40), fill=(255, 255, 255, 150))
+        # 바 중앙 수직 정렬
+        draw.text((60, (bar_y_start + bar_y_end)/2 - (h_bbox[3]-h_bbox[1])/2 - 10), headline, font=h_font, fill=(255, 255, 255))
+        draw.text((self.resolution[0] - 350, bar_y_start + 10), f"{self.market} MARKET", font=get_font(35), fill=(255, 255, 255, 120))
 
-        # 5. 중앙 메인 정보
+        # 5. 중앙 메인 정보 (중앙으로 더 밀착)
         if ticker:
-            draw.ellipse([340, 500, 740, 900], outline=bar_color, width=15)
+            center_y = 880
+            draw.ellipse([340, center_y - 200, 740, center_y + 200], outline=bar_color, width=15)
             
             # 티커 폰트 조절
             ticker_size = 120
@@ -339,18 +343,21 @@ class PokemonShortsPipeline:
                 t_font = get_font(ticker_size)
                 t_bbox = draw.textbbox((0, 0), ticker, font=t_font)
 
-            draw.text(((self.resolution[0] - (t_bbox[2]-t_bbox[0]))/2, 650), ticker, font=t_font, fill=(255, 255, 255))
+            draw.text(((self.resolution[0] - (t_bbox[2]-t_bbox[0]))/2, center_y - 50), ticker, font=t_font, fill=(255, 255, 255))
             
             is_up = "+" in change_val or (not "-" in change_val and change_val != "0" and change_val != "0.00%")
             badge_color = (255, 40, 40) if is_up else (40, 80, 255)
             badge_text = change_val if "%" in change_val else f"{change_val}%"
-            draw.rectangle([340, 950, 740, 1080], fill=badge_color, outline=(255, 255, 255), width=5)
+            
+            badge_h = 130
+            draw.rectangle([340, center_y + 250, 740, center_y + 250 + badge_h], fill=badge_color, outline=(255, 255, 255), width=5)
             c_bbox = draw.textbbox((0, 0), badge_text, font=get_font(80))
-            draw.text(((self.resolution[0] - (c_bbox[2]-c_bbox[0]))/2, 970), badge_text, font=get_font(80), fill=(255, 255, 255))
+            draw.text(((self.resolution[0] - (c_bbox[2]-c_bbox[0]))/2, center_y + 250 + 20), badge_text, font=get_font(80), fill=(255, 255, 255))
 
         # 6. 트렌드 라인 (랜덤 데코레이션)
         import random
-        points = [(100 + i * 90, 1350 + random.randint(-60, 60)) for i in range(10)]
+        # 자막 위쪽으로 위치 조정
+        points = [(100 + i * 90, 1300 + random.randint(-40, 40)) for i in range(10)]
         draw.line(points, fill=bar_color, width=10, joint="curve")
 
         # 7. 하단 자막 영역
@@ -481,7 +488,11 @@ class PokemonShortsPipeline:
             console.print(f"🔗 링크: https://youtu.be/{response['id']}")
 
         except Exception as e:
-            console.print(f"[red]❌ 유튜브 업로드 실패: {e}[/red]")
+            if "uploadLimitExceeded" in str(e):
+                console.print("[bold red]❌ 유튜브 일일 업로드 한도 초과 (Daily Limit Exceeded)[/bold red]")
+                console.print("[yellow]💡 유튜브 계정의 인증 단계나 일일 제한량을 확인해 주세요. 보통 24시간 뒤에 해제됩니다.[/yellow]")
+            else:
+                console.print(f"[red]❌ 유튜브 업로드 실패: {e}[/red]")
 
     async def run(self):
         try:
