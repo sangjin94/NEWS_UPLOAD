@@ -1,0 +1,25 @@
+# Credentials and environment
+.env
+token.json
+client_secret*.json
+
+# Media assets (Large files)
+media_assets/
+*.mp4
+*.mp3
+*.png
+
+# Data and Cache
+script_data.json
+__pycache__/
+.ipynb_checkpoints/
+
+# System
+.antigravity/
+.gemini/
+.idea/
+.vscode/
+
+# Python environment
+venv/
+.venv/
