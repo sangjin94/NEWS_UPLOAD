@@ -6,11 +6,14 @@ echo ========================================================
 echo   Pokemon Stock Shorts Automation Pipeline
 echo ========================================================
 echo.
-echo [1/1] Running Unified Pipeline...
+:: Run with market argument (e.g., run_pipeline.bat KR)
+set MARKET=%~1
+if "%MARKET%"=="" set MARKET=US
+
+echo [1/1] Running Unified Pipeline for Market: %MARKET%...
 echo.
 
-:: Run the unified python script with absolute python path
-"C:\Users\HanEx\.antigravity\.venv\Scripts\python.exe" shorts_pipeline.py
+"C:\Users\HanEx\.antigravity\.venv\Scripts\python.exe" shorts_pipeline.py --market %MARKET%
 
 echo.
 echo ========================================================

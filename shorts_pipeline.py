@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import glob
 import urllib.request
+import argparse
 from typing import List, Dict, Any
 
 # Windows 터미널 유니코드 인코딩 대응
@@ -42,13 +43,29 @@ load_dotenv()
 console = Console(force_terminal=True, color_system="auto", soft_wrap=True)
 
 class PokemonShortsPipeline:
-    def __init__(self):
-        self.watchlist = ['QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'AVGO']
+    def __init__(self, market: str = 'US'):
+        self.market = market.upper()
+        # 시장별 워치리스트 정의
+        if self.market == 'KR':
+            self.watchlist = ['005930.KS', '000660.KS', '373220.KS', '207940.KS', '005380.KS', 
+                              '005490.KS', '035420.KS', '035720.KS', '247540.KQ', '028300.KQ']
+            self.currency_symbol = "₩"
+            self.indices = ['^KS11', '^KQ11']
+        else:
+            self.watchlist = ['QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA', 'AMZN', 'META', 'GOOGL', 'AMD', 'AVGO']
+            self.currency_symbol = "$"
+            self.indices = ['^IXIC', '^GSPC', '^SOX']
+            
         self.output_dir = "media_assets"
-        self.video_filename = "final_shorts.mp4"
+        self.video_filename = f"final_shorts_{self.market}_{datetime.datetime.now().strftime('%H%M')}.mp4"
         self.resolution = (1080, 1920)
         self.tts_voice = "ko-KR-SunHiNeural"
         
+        # API 설정
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        if self.gemini_api_key:
+            genai.configure(api_key=self.gemini_api_key)
+            
         # API 설정
         self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         if self.gemini_api_key:
@@ -70,26 +87,27 @@ class PokemonShortsPipeline:
             TaskProgressColumn(),
             console=console
         ) as progress:
-            task = progress.add_task("[yellow]시장 데이터 수집 중...", total=len(self.watchlist))
+            task = progress.add_task(f"[yellow]{self.market} 시장 데이터 수집 중...", total=len(self.watchlist) + len(self.indices))
             
             market_summary = []
             news_summary = []
             
-            # 지수 및 주요 섹터 추가 (뉴스 다양성 확보)
-            track_list = self.watchlist + ['^IXIC', '^GSPC', '^SOX', 'USO', 'GLD']
+            # 지수 및 주요 섹터 추가
+            track_list = self.watchlist + self.indices
             
             for ticker_symbol in track_list:
                 try:
                     ticker = yf.Ticker(ticker_symbol)
-                    # 데이터 수집 (티커 요약용)
-                    if ticker_symbol in self.watchlist:
-                        hist = ticker.history(period="2d")
-                        if len(hist) >= 2:
-                            prev_close = hist['Close'].iloc[0]
-                            current_close = hist['Close'].iloc[1]
-                            volume = hist['Volume'].iloc[1]
-                            pct_change = ((current_close - prev_close) / prev_close) * 100
-                            
+                    hist = ticker.history(period="2d")
+                    
+                    if not hist.empty and len(hist) >= 1:
+                        current_close = hist['Close'].iloc[-1]
+                        prev_close = hist['Close'].iloc[0] if len(hist) >= 2 else current_close
+                        volume = hist['Volume'].iloc[-1] if 'Volume' in hist else 0
+                        pct_change = ((current_close - prev_close) / prev_close) * 100 if prev_close != 0 else 0
+                        
+                        # 종목만 요약에 추가 (지수는 제외하고 뉴스용으로만 사용 가능)
+                        if ticker_symbol in self.watchlist:
                             market_summary.append({
                                 "ticker": ticker_symbol,
                                 "price": round(current_close, 2),
@@ -97,10 +115,10 @@ class PokemonShortsPipeline:
                                 "volume": int(volume)
                             })
                     
-                    # 뉴스 수집 (모든 종목/지수에서 수집하여 다양성 확보)
+                    # 뉴스 수집 (모든 종목/지수에서 수집)
                     recent_news = ticker.news
                     if recent_news and isinstance(recent_news, list):
-                        for n in recent_news[:3]:
+                        for n in recent_news[:5]:
                             title = n.get('title') or n.get('summary', '')
                             if title:
                                 news_summary.append(f"[{ticker_symbol}] {title}")
@@ -109,19 +127,20 @@ class PokemonShortsPipeline:
                 progress.update(task, advance=1)
 
         # 결과 테이블 출력
-        table = Table(title="📈 수집된 주요 종목 실시간 시황")
+        table = Table(title=f"📈 {self.market} 주요 종목 실시간 시황")
         table.add_column("티커", style="cyan")
         table.add_column("현재가", justify="right")
         table.add_column("등락률(%)", justify="right")
         for s in sorted(market_summary, key=lambda x: abs(x['change']), reverse=True)[:5]:
             color = "green" if s['change'] >= 0 else "red"
-            table.add_row(s['ticker'], f"${s['price']}", f"[{color}]{s['change']}%[/{color}]")
+            table.add_row(s['ticker'], f"{self.currency_symbol}{s['price']:,}", f"[{color}]{s['change']:+}%[/{color}]")
         console.print(table)
 
         return {
             "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+            "market": self.market,
             "top_stocks": sorted(market_summary, key=lambda x: x['volume'], reverse=True)[:5],
-            "market_news": news_summary[:10]  # 상위 10개 뉴스 전달
+            "market_news": news_summary[:15]
         }
 
     def generate_script(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -129,24 +148,38 @@ class PokemonShortsPipeline:
         if not self.gemini_api_key:
             raise ValueError("GEMINI_API_KEY 환경 변수가 설정되어 있지 않습니다.")
 
-        system_instruction = """
+        system_instruction = f"""
         너는 전문 주식 뉴스 아나운서이자 쇼츠 영상 기획자야.
+        오늘의 {'한국 코스피/코스닥' if self.market == 'KR' else '미국 나스닥'} 시장 데이터를 바탕으로 쇼츠 대본을 작성해.
         
         [임무]
-        1. 제공된 데이터 중 주제가 **서로 다른(테크, 거시경제, 원자재/에너지 등)** 가장 중요한 뉴스 3개를 엄선해.
-        2. 각 씬의 'narration'은 짧은 한 문장으로 작성하고, 반드시 **관련 종목 이름과 등락률(%)**을 포함해.
-        3. 각 씬 데이터에 'related_stock'(예: NVDA)과 'stock_change'(예: +2.5) 필드를 추가해. (시각적 뱃지 생성용)
-        4. 전체 대사는 한국어로 뉴스 전달 톤으로 작성해.
-        5. 반드시 다음 JSON 구조를 지켜:
-           {
-             "title": "...",
-             "scenes": [
-               {"scene_number": 1, "narration": "...", "image_prompt": "...", "related_stock": "...", "stock_change": "..."},
-               ...
-             ],
-             "youtube_metadata": {...}
-           }
-        6. 씬 구성(6-8개): 오프닝, 이슈 1(2씬), 이슈 2(2씬), 이슈 3(2씬), 클로징.
+        1. 제공된 데이터 중 주제가 서로 다른 가장 중요한 뉴스 3개를 엄선해.
+        2. 각 씬의 'narration'은 짧고 임팩트 있는 한 문장으로 작성해.
+        3. 각 씬 데이터에 'related_stock'과 'stock_change' 필드를 추가해.
+        4. 시각화 개선을 위해 'visual_cue'(예: 'bullish', 'bearish', 'neutral', 'warning')와 'headline' 필드를 추가해.
+        5. 유튜브 알고리즘에 최적화된 제목, 설명, 그리고 20개 이상의 관련 태그(SEO 최적화)를 포함해.
+        6. 대본 구성(6-8개): 오프닝, 이슈 1(2씬), 이슈 2(2씬), 이슈 3(2씬), 클로징.
+        
+        [JSON 구조]
+        {{
+          "title": "...",
+          "scenes": [
+            {{
+              "scene_number": 1, 
+              "narration": "...", 
+              "related_stock": "...", 
+              "stock_change": "...",
+              "visual_cue": "...",
+              "headline": "..."
+            }},
+            ...
+          ],
+          "youtube_metadata": {{
+             "title": "...", 
+             "description": "...", 
+             "tags": ["#태그1", "#태그2", ...]
+          }}
+        }}
         """
         
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -192,40 +225,30 @@ class PokemonShortsPipeline:
                     }
                     script_data["scenes"] = [single_scene]
                 
-                # 씬 데이터 키 유연하게 처리 (scenes, script, shorts_script 등)
+                # 씬 데이터 정규화
                 if "scenes" in script_data:
                     for i, scene in enumerate(script_data["scenes"]):
                         if "scene_number" not in scene:
-                            scene["scene_number"] = scene.get("scene", i + 1)
+                            scene["scene_number"] = i + 1
                         if "narration" not in scene:
-                            scene["narration"] = scene.get("line", scene.get("text", ""))
-                        if "image_prompt" not in scene:
-                            # 별도의 image_prompts 리스트가 있는 경우와 action이 있는 경우 처리
-                            prompts = script_data.get("image_prompts", [])
-                            if i < len(prompts):
-                                scene["image_prompt"] = prompts[i]
-                            else:
-                                scene["image_prompt"] = scene.get("action", "A cool monster scene")
+                            scene["narration"] = scene.get("line", scene.get("text", "정보를 불러오는 중입니다."))
                 
-                title = script_data["youtube_metadata"].get("title", "No Title")
+                title = script_data.get("youtube_metadata", {}).get("title", "No Title")
                 console.print(f"[bold green]✅ 대본 생성 완료: {title}[/bold green]")
                 
-                # 디버깅 및 이미지 생성 가이드를 위해 JSON 파일로 저장
+                # 디버깅을 위해 JSON 파일로 저장
                 with open("script_data.json", "w", encoding="utf-8") as f:
                     json.dump(script_data, f, ensure_ascii=False, indent=2)
                 
                 return script_data
             except Exception as e:
                 console.print(f"[red]❌ 응답 파싱 실패: {e}[/red]")
-                console.print(f"Raw Response: {response.text}")
                 raise e
 
     # --- STEP 2: Media Generation ---
     async def generate_assets(self, script_data: Dict[str, Any]):
-        """오디오와 이미지를 생성합니다."""
+        """오디오와 대시보드 이미지를 생성합니다."""
         scenes = script_data.get("scenes", [])
-        console.print(f"[dim]📁 현재 작업 디렉토리: {os.getcwd()}[/dim]")
-        console.print(f"[dim]📂 미디어 저장 경로: {os.path.abspath(self.output_dir)}[/dim]")
         
         with Progress(
             SpinnerColumn(),
@@ -239,122 +262,122 @@ class PokemonShortsPipeline:
             for scene in scenes:
                 num = scene["scene_number"]
                 narration = scene["narration"]
-                img_prompt = scene["image_prompt"]
                 
                 # Audio (edge-tts)
                 audio_path = os.path.join(self.output_dir, f"scene_{num}.mp3")
-                if not narration.strip():
-                    narration = "데이터를 불러오는 중입니다."
-                
-                console.print(f"[dim]🎙️ 씬 {num} 나레이션 (속도+20%): {narration[:30]}...[/dim]")
                 communicate = edge_tts.Communicate(narration, self.tts_voice, rate="+20%")
                 await communicate.save(audio_path)
+                progress.update(task, advance=1, description=f"[magenta]씬 {num} 오디오 생성됨")
                 
-                # 파일 크기 확인 (0바이트 방지)
-                if os.path.exists(audio_path) and os.path.getsize(audio_path) == 0:
-                    console.print(f"[red]⚠️ 씬 {num} 오디오 생성 실패 (0바이트)[/red]")
-                else:
-                    progress.update(task, advance=1, description=f"[magenta]씬 {num} 오디오 생성됨")
-                
-                # Image (Pillow with Subtitles)
+                # Dashboard Image (Pillow)
                 image_path = os.path.join(self.output_dir, f"scene_{num}.png")
-                
-                # 이미지 생성 로직 (Pillow를 사용하여 자막 직접 합성)
-                try:
-                    # 배경 이미지 (기존 이미지가 없으면 검은 배경 생성, 있으면 로드)
-                    if os.path.exists(image_path):
-                        img = Image.open(image_path).convert('RGB')
-                        # 1080x1920이 아니면 리사이즈
-                        if img.size != self.resolution:
-                            img = img.resize(self.resolution, Image.Resampling.LANCZOS)
-                    else:
-                        img = Image.new('RGB', self.resolution, color=(20, 20, 25))
-                        
-                    draw = ImageDraw.Draw(img)
-                    
-                    # 윈도우 한글 폰트 설정
-                    font_paths = [
-                        "C:\\Windows\\Fonts\\malgun.ttf", 
-                        "C:\\Windows\\Fonts\\malgunbd.ttf", 
-                        "C:\\Windows\\Fonts\\gulim.ttc"
-                    ]
-                    font = None
-                    for fp in font_paths:
-                        if os.path.exists(fp):
-                            font = ImageFont.truetype(fp, 60)
-                            font_bold = ImageFont.truetype(fp, 80)
-                            break
-                    
-                    if not font:
-                        font = ImageFont.load_default()
-                        font_bold = font
+                self.draw_dashboard(scene, image_path)
+                progress.update(task, advance=1, description=f"[magenta]씬 {num} 대시보드 이미지 완성")
 
-                    # 자막 박스 (모바일 최적화: 2줄 제한 및 가로 여백 확보)
-                    margin = 80
-                    line_height = 90
-                    max_chars = 18  # 모바일 가독성을 위해 한 줄당 글자 수 축소
-                    
-                    # 텍스트 줄바꿈
-                    words = narration.split()
-                    lines = []
-                    current_line = ""
-                    for word in words:
-                        if len(current_line + word) <= max_chars:
-                            current_line += (" " if current_line else "") + word
-                        else:
-                            lines.append(current_line)
-                            current_line = word
-                    lines.append(current_line)
-                    
-                    # 최대 2줄만 유지 (Gemini가 짧게 주겠지만 안전장치)
-                    lines = lines[:2]
-                    
-                    # 자막 영역 높이 계산
-                    rect_h = len(lines) * line_height + 100
-                    draw.rectangle(
-                        [0, self.resolution[1] - rect_h, self.resolution[0], self.resolution[1]],
-                        fill=(0, 0, 0, 180)
-                    )
-                    
-                    # 텍스트 그리기
-                    y_start = self.resolution[1] - rect_h + 50
-                    for i, line in enumerate(lines):
-                        # 텍스트 너비 및 높이 계산을 위한 getbbox 사용
-                        bbox = draw.textbbox((0, 0), line, font=font)
-                        w = bbox[2] - bbox[0]
-                        draw.text(((self.resolution[0] - w) / 2, y_start + i * line_height), line, font=font, fill=(255, 255, 255))
-                    
-                    # 상단 제목 추가
-                    title_text = "MARKET BRIEFING"
-                    bbox_t = draw.textbbox((0, 0), title_text, font=font_bold)
-                    wt = bbox_t[2] - bbox_t[0]
-                    draw.rectangle([0, 100, self.resolution[0], 250], fill=(200, 0, 0))
-                    draw.text(((self.resolution[0] - wt) / 2, 130), title_text, font=font_bold, fill=(255, 255, 255))
-                    
-                    # 주가 뱃지 (V4 신규 기능: [종목] +% 강조)
-                    ticker_name = scene.get("related_stock")
-                    change_val = str(scene.get("stock_change", ""))
-                    if ticker_name and change_val:
-                        badge_text = f"[{ticker_name}] {change_val}%"
-                        # 한국식 색상: 빨강=상승, 파랑=하락
-                        is_up = "+" in change_val or (not "-" in change_val and change_val != "0")
-                        badge_color = (255, 50, 50) if is_up else (50, 50, 255)
-                        
-                        bbox_b = draw.textbbox((0, 0), badge_text, font=font_bold)
-                        wb = bbox_b[2] - bbox_b[0]
-                        hb = bbox_b[3] - bbox_b[1]
-                        
-                        # 화면 중앙 우측에 배치
-                        badge_x = self.resolution[0] - wb - 100
-                        badge_y = 400
-                        draw.rectangle([badge_x - 20, badge_y - 20, badge_x + wb + 20, badge_y + hb + 20], fill=badge_color)
-                        draw.text((badge_x, badge_y), badge_text, font=font_bold, fill=(255, 255, 255))
-                    
-                    img.save(image_path)
-                    progress.update(task, advance=1, description=f"[magenta]씬 {num} 자막 이미지 완성")
-                except Exception as e:
-                    console.print(f"[red]⚠️ 이미지 자막 합성 실패: {e}[/red]")
-                    progress.update(task, advance=1)
+    def draw_dashboard(self, scene: Dict[str, Any], output_path: str):
+        """Pillow를 사용하여 전문적인 주식 뉴스 대시보드를 생성합니다."""
+        narration = scene.get("narration", "")
+        headline = scene.get("headline", "STOCK NEWS")
+        ticker = scene.get("related_stock", "")
+        change_val = str(scene.get("stock_change", "0"))
+        cue = scene.get("visual_cue", "neutral").lower()
+
+        # 1. 배경 설정
+        bg_colors = {
+            "bullish": (15, 30, 20),
+            "bearish": (30, 15, 15),
+            "warning": (35, 30, 10),
+            "neutral": (20, 20, 25)
+        }
+        bg_color = bg_colors.get(cue, bg_colors["neutral"])
+        img = Image.new('RGB', self.resolution, color=bg_color)
+        draw = ImageDraw.Draw(img)
+
+        # 2. 폰트 로드
+        font_paths = [
+            "C:\\Windows\\Fonts\\malgunbd.ttf", 
+            "C:\\Windows\\Fonts\\malgun.ttf",
+            "C:\\Windows\\Fonts\\gulim.ttc"
+        ]
+        font_path = next((fp for fp in font_paths if os.path.exists(fp)), None)
+        
+        def get_font(size):
+            return ImageFont.truetype(font_path, size) if font_path else ImageFont.load_default()
+
+        # 3. 디자인 요소: 배경 패턴
+        for i in range(0, self.resolution[0], 100):
+            draw.line([(i, 0), (i, self.resolution[1])], fill=(40, 40, 45), width=1)
+        for i in range(0, self.resolution[1], 100):
+            draw.line([(0, i), (self.resolution[0], i)], fill=(40, 40, 45), width=1)
+
+        # 4. 상단 헤드라인 바
+        bar_color = (180, 20, 20) if "bear" in cue else (20, 130, 40) if "bull" in cue else (40, 60, 180)
+        draw.rectangle([0, 120, self.resolution[0], 280], fill=bar_color)
+        
+        # 헤드라인 폰트 조절 (가로 폭에 맞춰 축소)
+        headline_size = 80
+        h_font = get_font(headline_size)
+        h_bbox = draw.textbbox((0, 0), headline, font=h_font)
+        while (h_bbox[2] - h_bbox[0]) > (self.resolution[0] - 120) and headline_size > 40:
+            headline_size -= 5
+            h_font = get_font(headline_size)
+            h_bbox = draw.textbbox((0, 0), headline, font=h_font)
+        
+        draw.text((60, 200 - (h_bbox[3]-h_bbox[1])/2), headline, font=h_font, fill=(255, 255, 255))
+        draw.text((self.resolution[0] - 350, 180), f"{self.market} MARKET", font=get_font(40), fill=(255, 255, 255, 150))
+
+        # 5. 중앙 메인 정보
+        if ticker:
+            draw.ellipse([340, 500, 740, 900], outline=bar_color, width=15)
+            
+            # 티커 폰트 조절
+            ticker_size = 120
+            t_font = get_font(ticker_size)
+            t_bbox = draw.textbbox((0, 0), ticker, font=t_font)
+            while (t_bbox[2] - t_bbox[0]) > (self.resolution[0] - 100) and ticker_size > 50:
+                ticker_size -= 10
+                t_font = get_font(ticker_size)
+                t_bbox = draw.textbbox((0, 0), ticker, font=t_font)
+
+            draw.text(((self.resolution[0] - (t_bbox[2]-t_bbox[0]))/2, 650), ticker, font=t_font, fill=(255, 255, 255))
+            
+            is_up = "+" in change_val or (not "-" in change_val and change_val != "0" and change_val != "0.00%")
+            badge_color = (255, 40, 40) if is_up else (40, 80, 255)
+            badge_text = change_val if "%" in change_val else f"{change_val}%"
+            draw.rectangle([340, 950, 740, 1080], fill=badge_color, outline=(255, 255, 255), width=5)
+            c_bbox = draw.textbbox((0, 0), badge_text, font=get_font(80))
+            draw.text(((self.resolution[0] - (c_bbox[2]-c_bbox[0]))/2, 970), badge_text, font=get_font(80), fill=(255, 255, 255))
+
+        # 6. 트렌드 라인 (랜덤 데코레이션)
+        import random
+        points = [(100 + i * 90, 1350 + random.randint(-60, 60)) for i in range(10)]
+        draw.line(points, fill=bar_color, width=10, joint="curve")
+
+        # 7. 하단 자막 영역
+        draw.rectangle([0, self.resolution[1] - 450, self.resolution[0], self.resolution[1]], fill=(0, 0, 0, 180))
+        
+        margin = 80
+        max_w = self.resolution[0] - (margin * 2)
+        font_sub = get_font(55)
+        words = narration.split()
+        lines, current_line = [], ""
+        for word in words:
+            test_line = current_line + (" " if current_line else "") + word
+            bbox = draw.textbbox((0, 0), test_line, font=font_sub)
+            if (bbox[2] - bbox[0]) <= max_w: current_line = test_line
+            else:
+                lines.append(current_line)
+                current_line = word
+        lines.append(current_line)
+        
+        y_text = self.resolution[1] - 380
+        for line in lines[:3]:
+            l_bbox = draw.textbbox((0, 0), line, font=font_sub)
+            draw.text(((self.resolution[0] - (l_bbox[2]-l_bbox[0]))/2, y_text), line, font=font_sub, fill=(255, 220, 0))
+            y_text += 85
+
+        draw.text((self.resolution[0] - 380, self.resolution[1] - 80), "@STOCK_SHORTS_AI", font=get_font(30), fill=(120, 120, 120))
+        img.save(output_path)
 
     # --- STEP 3: Video Synthesis ---
     def synthesize_video(self, script_data: Dict[str, Any]):
@@ -462,17 +485,12 @@ class PokemonShortsPipeline:
 
     async def run(self):
         try:
-            console.print(Panel.fit("POKEMON STOCK SHORTS PIPELINE", title="🔥", border_style="bold yellow"))
+            console.print(Panel.fit(f"POKEMON STOCK SHORTS PIPELINE - {self.market}", title="🔥", border_style="bold yellow"))
             
-            # 1. 데이터 및 대본
-            if os.path.exists("script_data.json"):
-                console.print("[yellow]📦 기존 대본 데이터(script_data.json)를 발견했습니다. 재생성을 건너뜁니다.[/yellow]")
-                with open("script_data.json", "r", encoding="utf-8") as f:
-                    script_data = json.load(f)
-            else:
-                self.log_step("STEP 1: 데이터 수집 및 기획")
-                market_data = self.fetch_market_data()
-                script_data = self.generate_script(market_data)
+            # (기존 logic 동일)
+            self.log_step("STEP 1: 데이터 수집 및 기획")
+            market_data = self.fetch_market_data()
+            script_data = self.generate_script(market_data)
             
             # 2. 자산 생성
             self.log_step("STEP 2: 미디어 자산 생성")
@@ -486,7 +504,7 @@ class PokemonShortsPipeline:
             self.log_step("STEP 4: 유튜브 업로드")
             self.upload_to_youtube(script_data)
             
-            console.print("\n[bold green]✨ 모든 파이프라인이 성공적으로 완료되었습니다! ✨[/bold green]")
+            console.print(f"\n[bold green]✨ {self.market} 파이프라인이 성공적으로 완료되었습니다! ✨[/bold green]")
             
         except Exception as e:
             console.print(f"\n[bold red]❌ 파이프라인 중단 오류 발생: {e}[/bold red]")
@@ -494,5 +512,9 @@ class PokemonShortsPipeline:
             console.print(traceback.format_exc())
 
 if __name__ == "__main__":
-    pipeline = PokemonShortsPipeline()
+    parser = argparse.ArgumentParser(description="Stock Shorts Pipeline")
+    parser.add_argument("--market", type=str, default="US", choices=["US", "KR"], help="Market to process (US or KR)")
+    args = parser.parse_args()
+    
+    pipeline = PokemonShortsPipeline(market=args.market)
     asyncio.run(pipeline.run())
